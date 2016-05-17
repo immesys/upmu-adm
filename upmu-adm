@@ -52,12 +52,20 @@ print banner
 
 dirty = False
 
-def mknew(alias, serial):
+def mknew(alias, serial, ext=False):
     rv = {"%alias":alias, "%active":True, "%serial_number":serial}
     rv["Metadata"] = {"SourceName":"uPMU", "Instrument":{"SerialNumber":serial}}
     tl = [(("L1ANG","L2ANG","L3ANG","C1ANG","C2ANG","C3ANG"),"Degrees"),
           (("L1MAG","L2MAG","L3MAG"), "Volts"),
-          (("C1MAG","C2MAG","C3MAG"), "Amps")]
+          (("C1MAG","C2MAG","C3MAG"), "Amps"),
+          (("LSTATE",), "bitmap")]
+    if ext:
+        tl += [(("FUND_W",), "Watts"),
+               (("FUND_VA",), "unk"),
+               (("FUND_VAR",), "unk"),
+               (("FUND_DPF",), "unk"),
+               (("FREQ_L1_1S",), "Hertz"),
+               (("FREQ_L1_C37",), "Hertz")]
     for t in tl:
         unit = t[1]
         for subtag in t[0]:
@@ -116,6 +124,7 @@ origconfig = ConfigObj(metaconfig["inifile"])
 
 
 def disp_help(tokens):
+    """Show available commands"""
     print "The following commands are available:"
     for f in funcs.keys():
       print "\033[93m%s%s \033[0m%s" %(f," "*(10-len(str(f))), funcs[f].__doc__)
@@ -125,11 +134,15 @@ def create_funcs():
 
     def add(tokens):
       """Add a new uPMU to the system"""
-      if len(tokens) != 4:
-        print "Usage: add ipaddr serial alias"
+      if len(tokens) not in  [4,5]:
+        print "Usage: add ipaddr serial alias [ext]"
         return
-      ipaddr, serial, alias = tokens[1:]
-      config[ipaddr] = mknew(alias, serial)
+      if len(tokens) == 4:
+          ipaddr, serial, alias = tokens[1:]
+          config[ipaddr] = mknew(alias, serial)
+      else:
+          ipaddr, serial, alias, ext = tokens[1:]
+          config[ipaddr] = mknew(alias, serial, ext in ["true","1","True","TRUE"])
       global dirty
       dirty = True
       print "uPMU added, remember to type 'save' to persist configuration"
@@ -139,19 +152,20 @@ def create_funcs():
       if len(tokens) != 1:
         print "Usage: list"
         return
-      print "      SERIAL   IP ADDRESS      ALIAS"
+      print "      SERIAL   IP ADDRESS      EXT ALIAS"
       print "-"*columns
-      pat = "%s %-8s %-15s %s"
+      pat = "%s %-8s %-15s %s %s"
+      isext = lambda x : "T" if "FUND_W" in x else "F"
       for k in config:
         if k not in origconfig:
           prefx = "\033[92mNEW: \033[0m"
         else:
           prefx = "     "
-        print pat % (prefx, config[k]["%serial_number"], k, config[k]["%alias"])
+        print pat % (prefx, config[k]["%serial_number"], k, isext(config[k]), config[k]["%alias"])
       for k in origconfig:
         if k not in config:
             prefx = "\033[91mDEL: \033[0m"
-            print pat % (prefx, origconfig[k]["%serial_number"], k, origconfig[k]["%alias"])
+            print pat % (prefx, origconfig[k]["%serial_number"], k, isext(origconfig[k]), origconfig[k]["%alias"])
 
     def delbackup(tokens):
       """Delete specific backup files"""
@@ -208,6 +222,46 @@ def create_funcs():
           with open(fn,"w") as f:
               f.write(doc["data"])
       print "Export complete" if f else "No records found matching those criteria"
+
+    def setext(tokens):
+      """Set if extended dat files are emitted by this pmu"""
+      if len(tokens) < 3:
+          print "Usage: setext ipaddr true/false"
+          return
+      k = tokens[1]
+      v = tokens[2] == "true"
+      if k not in config:
+          print "No PMU with that IP address"
+          return
+      alias = config[k]["%alias"]
+      tl = [(("FUND_W",), "Watts"),
+            (("FUND_VA",), "unk"),
+            (("FUND_VAR",), "unk"),
+            (("FUND_DPF",), "unk"),
+            (("FREQ_L1_1S",), "Hertz"),
+            (("FREQ_L1_C37",), "Hertz")]
+      if v:
+          if "FUND_W" in config[k]:
+              print "PMU is already in extended mode"
+              return
+          del origconfig[k]
+          for t in tl:
+              unit = t[1]
+              for subtag in t[0]:
+                  config[k][subtag] = {"Path":"/upmu/"+alias+"/"+subtag,
+                                "uuid":str(uuid.uuid4()).upper(),
+                                "Properties":{"UnitofMeasure":unit}}
+      else:
+          if "FUND_W" not in config[k]:
+              print "PMU is already out of extended mode"
+              return
+          del origconfig[k]
+          for t in tl:
+              for subtag in t[0]:
+                  del config[k][subtag]
+      global dirty
+      dirty = True
+      print "uPMU mondified, remember to type 'save' to persist configuration"
 
     def importdat(tokens):
       """Import raw uPMU DAT files"""
@@ -282,6 +336,7 @@ def create_funcs():
       print "Wrote metadata to %s" % metaconfig["alias"]
 
     def exit(tokens):
+        """Exit (does not trigger a save)"""
         if len(tokens) != 1:
             print "Usage: exit"
             return
